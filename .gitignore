@@ -61,3 +61,16 @@ app/window.json
 # 与 har_logs/ 同一性质 —— 只在本机留，不入库。
 pw_api.log
 pw_*.log
+
+# Private Weixin bridge state and browser sessions
+app/sessions/
+.weixin-bridge/
+binding.json
+context.json
+qr.json
+forward-cursor.json
+receive-state.json
+reply-mode.json
+*.sqlite3
+*.sqlite3-*
+.deployment-backups/

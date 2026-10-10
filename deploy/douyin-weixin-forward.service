@@ -1,0 +1,19 @@
+[Unit]
+Description=Douyin Weixin outbound bridge
+Wants=network-online.target
+After=network-online.target
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/douyin-spark-flow
+EnvironmentFile=/home/ubuntu/douyin-weixin-validation/bridge.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/douyin-spark-flow/.venv/bin/python -m core.ai.weixin_worker
+UMask=0077
+Restart=on-failure
+RestartSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target

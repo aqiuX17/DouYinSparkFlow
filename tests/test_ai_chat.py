@@ -190,6 +190,22 @@ class ProviderTests(unittest.TestCase):
 
 
 class TargetAndLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        # All browser tests use fake objects and private temporary bridge state.
+        from core.ai import reply_mode, bridge_commands
+        self.state = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state.cleanup)
+        root = Path(self.state.name)
+        for patcher in (
+            patch.object(reply_mode, 'PATH', root / 'mode.json'),
+            patch.object(bridge_commands, 'DB', root / 'queue.sqlite3'),
+            patch.dict('os.environ', {'DOUYIN_WEIXIN_DB': str(root / 'queue.sqlite3'),
+                                     'DOUYIN_SESSION_DIR': str(root / 'sessions')}),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        reply_mode.set_mode('ai')
+
     def test_exact_resolution_rejects_missing_and_ambiguous_names(self):
         im = MagicMock(last_scan={'scanned_all':True})
         im.iter_conversations.return_value = [{'conv_id':'a','title':'小明','is_group':False}]
@@ -281,6 +297,44 @@ class TargetAndLifecycleTests(unittest.TestCase):
             run_account(account, config.ai_chat, config, stop, lambda *_: None)
         im.type_and_send.assert_called_once_with(hit, '大家好', log_content=False)
         self.assertEqual(provider.reply.call_args.args[0][-1]['content'], '[成员1] 你好')
+
+    def test_disappeared_chat_page_exits_instead_of_silently_polling_forever(self):
+        stop = threading.Event()
+        config = Config(ai_chat=ai_config())
+        config.ai_chat.poll_interval = 0
+        account = Account(username='test', cookies='[]', ai_targets=['好友'])
+        im = MagicMock(ready=True, last_scan={'scanned_all': True})
+        im.wait_ready.return_value = {'status': 'READY'}
+        im.iter_conversations.return_value = [{'conv_id':'a', 'display':'好友', 'title':'好友'}]
+        im.read_chat_messages.return_value = []
+        with patch('cloakbrowser.launch') as launch, patch('core.ai.runner.DouyinIM', return_value=im), patch('core.ai.runner.create_provider') as factory:
+            page = launch.return_value.new_context.return_value.new_page.return_value
+            page.evaluate.return_value = {'hasChatRoot': False, 'loginVisible': True}
+            with self.assertRaisesRegex(ValueError, '连续 3 次不可用'):
+                run_account(account, config.ai_chat, config, stop, lambda *_: None)
+            self.assertEqual(page.evaluate.call_count, 3)
+            im.select_conversation.assert_called_once()  # initial history only
+            im.type_and_send.assert_not_called()
+            launch.return_value.close.assert_called_once()
+            factory.return_value.close.assert_called_once()
+
+    def test_present_chat_root_with_all_selections_failing_exits(self):
+        stop = threading.Event()
+        config = Config(ai_chat=ai_config())
+        config.ai_chat.poll_interval = 0
+        account = Account(username='test', cookies='[]', ai_targets=['好友'])
+        im = MagicMock(ready=True, last_scan={'scanned_all': True})
+        im.wait_ready.return_value = {'status': 'READY'}
+        im.iter_conversations.return_value = [{'conv_id':'a', 'display':'好友', 'title':'好友'}]
+        im.read_chat_messages.return_value = []
+        im.select_conversation.side_effect = [True, False, False, False]
+        with patch('cloakbrowser.launch') as launch, patch('core.ai.runner.DouyinIM', return_value=im), patch('core.ai.runner.create_provider'):
+            page = launch.return_value.new_context.return_value.new_page.return_value
+            page.evaluate.return_value = {'hasChatRoot': True, 'loginVisible': False}
+            with self.assertRaisesRegex(ValueError, '连续 3 次不可用'):
+                run_account(account, config.ai_chat, config, stop, lambda *_: None)
+            im.type_and_send.assert_not_called()
+
 
 
 class MessageReaderTests(unittest.TestCase):

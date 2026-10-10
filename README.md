@@ -1,71 +1,68 @@
-# DouYin Spark Flow
+# DouYinSparkFlow · 微信桥接与 AI 陪聊
 
-![cover](docs/images/cover.png)
+本仓库是 [2061360308/DouYinSparkFlow](https://github.com/2061360308/DouYinSparkFlow) 的个人 fork，保留原项目的可视化管理、自动续火花、多账户和 Docker 功能，并增加 AI 陪聊、会话状态保存及微信 ClawBot 双向消息桥接。修改维护在本仓库；不是上游官方功能。
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python)
-![Playwright](https://img.shields.io/badge/Playwright-%E2%9C%94-green?logo=playwright)
-![chrome-headless-shell](https://img.shields.io/badge/chrome--headless--shell-%E2%9C%94-brightgreen?logo=googlechrome)
+## 功能
 
-## 贡献者
+- 抖音已监听会话的新消息转发到绑定的微信账号；只接收该绑定人的微信指令。
+- 微信获取抖音聊天列表，按编号给好友或群聊发送纯文本，无二次确认。
+- 人工模式下，新消息成功提交微信接口后的 60 秒内，普通微信文字默认回复最近一次通知对应的抖音会话。
+- 微信切换 AI／人工模式，切换后丢弃旧模式生成中的回复，避免旧任务误发。
+- SQLite 持久化队列和去重；未知发送结果标记 uncertain，不自动重发。
+- iLink 长轮询收消息、出站 POST 发消息；桥接程序不开放公网端口，不依赖 Grok routine 或 Webhook。
 
-感谢所有为本项目做出贡献的开发者：
+## 快速开始
 
-[![contributors](https://contrib.rocks/image?repo=2061360308/DouYinSparkFlow)](https://github.com/2061360308/DouYinSparkFlow/graphs/contributors)
+源码部署建议使用 Python 3.12（服务器验证版本）；浏览器需具备运行依赖。
 
-## 📌 项目介绍
+```sh
+git clone https://github.com/aqiuX17/DouYinSparkFlow.git
+cd DouYinSparkFlow
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+python main.py app
+```
 
-**抖音火花自动续火脚本**一款轻量实用的抖音互动脚本，可自动为你和抖音好友续火花，无需手动操作。
+先在应用中配置抖音登录、AI 服务和监听目标，再运行 `python main.py chat`。微信桥接部署与扫码绑定见 [微信桥接指南](docs/guide/微信桥接.md)；AI 参数见 [AI 陪聊](docs/guide/AI陪聊.md)。原功能、界面及上游教程见 [原项目说明](docs/guide/原项目说明.md)。
 
-![界面展示](docs/images/屏幕截图%202026-10-05%20190345.png)
+> 此版本默认人工模式：模式文件不存在或损坏时不自动回复。启用 AI 需要发送“切换AI”或显式调用模式配置。人工模式仍需要现有 chat 配置和浏览器监听进程。
 
-✅ 支持 可视化应用，操作简单方便
+## 微信指令
 
-✅ 支持 Docker 部署
+| 指令 | 用途 |
+| --- | --- |
+| 获取聊天列表 | 显示编号、好友／群聊及名称 |
+| 发送 3 你好 | 人工模式下直接发送到编号 3，不再确认 |
+| 查看回复目标 | 查看当前快捷回复目标与剩余时间 |
+| 切换人工 / 人工模式 | 停止 AI 自动回复，保留转发和手动发送 |
+| 切换AI / AI模式 | 启用已配置目标的 AI 自动回复 |
+| 查看模式 | 查看当前全局模式 |
+| 帮助 / 发送帮助 | 查看发送规则 |
 
-✅ 可安装在挂机宝长期托管，也可安装到个人日常电脑日常开机静默执行
+### 60 秒规则与边界
 
-### 特性/优势
+A 的通知后直接回复发给 A；如果 B 的新通知随后成功发送，默认目标立即切换为 B。已入队的回复目标冻结，不会改投 B。超时后普通文字不发送，请用“发送 编号 内容”。计时从服务端 iLink 返回成功消息 ID 开始，不是手机打开通知的时间，也不是手机送达证明。模式切换会使旧快捷回复目标失效。
 
-- [x] 可视化应用，新手也能入门操作
-- [x] 多用户,同时批量支持多个账户
-- [x] 多目标,一个账户支持多个续火花目标
-- [x] 支持按照昵称和抖音号多种方式查找好友目标
-- [x] 一言支持,更丰富的消息文本
-- [x] 使用CloakBrowser，稳定自动化操作环境，降低被判别为机器的风险
+聊天列表是启动扫描的会话目录，**不等于好友通讯录，也不等于全部监听**；新消息仅监控配置中的目标，新增会话需重新扫描。模式及快捷回复目标当前为单一绑定人的全局状态，多账户使用也共享最新目标。群聊有直接发送权限，但最新群聊／快捷回复组合目前只有模拟浏览器测试，尚不能宣称实机群聊发送验收完成。
 
-使用`CloakBrowse`（基于PlayWright）自动化操作[抖音聊天网页版](https://www.douyin.com/chat)，进行定时发送抖音消息来续火花
+## 测试与源码
 
-## 🚀 使用方法
+```sh
+python tests/check_weixin_bridge.py
+# 标准测试需要隔离模式、队列和会话目录，详见部署指南
+```
 
-### AI 陪聊（本 fork 新增）
+桥接模块：`core/ai/weixin_forward.py`、`bridge_commands.py`、`reply_mode.py`、`weixin_worker.py`、`weixin_bind.py`；浏览器集成：`runner.py`；会话状态：`core/session_store.py`。服务模板在 `deploy/`。
 
-在应用的「AI 陪聊」页面填写 DeepSeek API Key、单独选择陪聊好友或群聊并启动。支持多个 AI 服务、OpenAI 兼容接口、角色提示词和多轮上下文；群聊上下文区分不同成员。已有配置不会自动启用陪聊；原续火花任务保持独立。
+## 隐私与运行风险
 
-详细使用与扩展说明见 [AI 陪聊](docs/guide/AI陪聊.md)。源码可执行 `python main.py chat` 持续运行，Ctrl+C 停止。
+- 不提交 Cookie、API Key、binding/context、二维码、真实聊天数据库、会话状态或服务器备份。运行目录权限 700、敏感文件 600。
+- 队列保存消息文本，目前没有自动清理策略；运营时需要自行制定保留期，避免无限增长。
+- 免确认发送存在误发风险，尤其多个会话连续通知时；不确定目标就显式指定编号。
+- 扫码上下文可能过期，需先在 ClawBot 发一句话刷新 context_token；失败状态请检查，未知结果不要盲目重发。
+- 浏览器自动化及非稳定接口可能失效，可能受到平台限制。仅用于自己有权管理的账号及正常交流，不用于骚扰、刷量或规避平台风控。
 
-保姆级教程见 [项目文档-https://oilu.cn/DouYinSparkFlow](https://oilu.cn/DouYinSparkFlow)
+## 来源与许可
 
-## 📢交流讨论
-
-已开放讨论区，有疑问或展示相关成果，发布话题需求的可以加入讨论
-
-[跳转讨论区](https://github.com/2061360308/DouYinSparkFlow/discussions)
-
-此外创建了一个QQ群，用于收集反馈信息，交流讨论，[点此加入](https://qun.qq.com/universal-share/share?ac=1&authKey=r6QyQAfAdjDnardyxro5kycsnF%2BdsLBTGUPWh7gFxqutzbbVF2shbgmqNJyCRdbZ&busi_data=eyJncm91cENvZGUiOiIxMDkxNjUxNDYyIiwidG9rZW4iOiJPdlB6dDU2Y2RxMzZ3L2ZWU01LNWtxM0ZWSW56QzlpSmZ5dnZVYWI3dzJWY2hVQmROeHZHN3QwdEpvUGJsc0JnIiwidWluIjoiMjA2MTM2MDMwOCJ9&data=L-_Gkg2cVrzDBW6FWJnD31g0RDbq67_YR0WK17hkRrMetritPsn3gvtBMXpTmY8Y8UZDlwY9qz5liHbbG3YDlg&svctype=4&tempid=h5_group_info
-)
-
-## ⭐Star 趋势
-
-[![Star History Chart](https://api.star-history.com/svg?repos=2061360308/DouYinSparkFlow&type=Date)](https://www.star-history.com/#2061360308/DouYinSparkFlow&Date)
-
-## ⚠️ 免责声明
-
-1. 本项目为**开源学习用途**，仅用于技术研究和个人自用，严禁用于商业用途、恶意刷量或违反抖音平台规则的行为。
-2. 使用本脚本产生的一切风险（包括但不限于抖音账号限流、封禁、处罚等）均由使用者自行承担，项目开发者不承担任何责任。
-3. 本项目仅调用公开的接口/模拟人工操作，不涉及破解、入侵抖音系统，使用者需遵守《抖音用户服务协议》及相关法律法规。
-4. 请合理控制脚本运行频率，避免给抖音平台服务器造成压力，建议仅用于个人少量好友的火花维系。
-5. 若你使用本项目即表示已阅读并同意本免责声明，如不同意请立即停止使用。
-
-## 📄 开源协议
-
-本项目基于 MIT 协议开源，你可以自由使用、修改和分发本项目代码，详见 [LICENSE](LICENSE) 文件。
+保留上游版权和 [MIT LICENSE](LICENSE)。微信接入参考 [Tencent/openclaw-weixin](https://github.com/Tencent/openclaw-weixin)。原项目作者、贡献者和原功能说明见上述上游链接与原项目说明。

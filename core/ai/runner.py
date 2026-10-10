@@ -7,16 +7,22 @@ import os
 import threading
 import time
 
+from core.ai.bridge_commands import publish, process_browser, recover
+from core.ai.reply_mode import read_mode, allows_send
+from core.ai.weixin_forward import ForwardOutbox
 from core.ai.config import AIConfig
 from core.ai.engine import ReplyEngine
 from core.ai.providers import create_provider
-from core.douyin_im import DouyinIM, STATUS_READY, norm
+from core.session_store import SessionStore, capture_state
+from core.douyin_im import DouyinIM, STATUS_READY, JS_LOGIN_DOM, norm
 
 
-def resolve_targets(im, targets, stop):
+def resolve_targets(im, targets, stop, on_hit=None):
     wanted = {norm(t) for t in targets if norm(t)}
     matches = {t: {} for t in wanted}
     for hit in im.iter_conversations():
+        if on_hit is not None:
+            on_hit(dict(hit))
         if stop.is_set():
             return []
         for key in wanted:
@@ -54,11 +60,14 @@ def run_account(account, config: AIConfig, browser_config, stop: threading.Event
             kwargs["proxy"] = browser_config.proxy_address
         emit("status", f"{name}：正在连接抖音")
         browser = launch(**kwargs)
-        context = browser.new_context()
         import json
         cookies = json.loads(account.cookies)
-        context.add_cookies([{k: v for k, v in cookie.items() if k != "sameSite"}
-                            for cookie in cookies])
+        sessions = SessionStore(account.unique_id, cookies, account.fingerprint)
+        state = sessions.load()
+        context = browser.new_context(**({'storage_state':state} if state else {}))
+        if state is None:
+            context.add_cookies([{k: v for k, v in cookie.items() if k != "sameSite"}
+                                for cookie in cookies])
         context.set_default_timeout(browser_config.browser_action_timeout * 1000)
         context.set_default_navigation_timeout(browser_config.browser_action_timeout * 1000)
         page = context.new_page()
@@ -68,9 +77,20 @@ def run_account(account, config: AIConfig, browser_config, stop: threading.Event
                       max_steps=browser_config.im_max_steps)
         if im.wait_ready().get("status") != STATUS_READY:
             raise ValueError(f"{name} 登录不可用，请刷新登录信息")
+        def checkpoint():
+            try:
+                sessions.save(capture_state(context))
+            except Exception:
+                emit('status', f'{name}：登录状态保存失败，请检查数据目录权限')
+        checkpoint()
+        last_checkpoint = time.monotonic()
         emit("status", f"{name}：已连接，正在扫描好友和群聊会话")
-        hits = resolve_targets(im, account.ai_targets, stop)
+        all_hits = []
+        hits = resolve_targets(im, account.ai_targets, stop, on_hit=all_hits.append)
+        publish(account.unique_id, all_hits)
+        recover(account.unique_id)
         engine = ReplyEngine(config, started_at=started_at)
+        forward = ForwardOutbox()
         emit("status", f"{name}：正在初始化会话，跳过现有消息")
         for hit in hits:
             if stop.is_set():
@@ -78,24 +98,46 @@ def run_account(account, config: AIConfig, browser_config, stop: threading.Event
             if not im.select_conversation(hit['conv_id']):
                 raise ValueError(f"无法初始化会话：{hit['display']}，请重新启动陪聊")
             page.wait_for_timeout(600)
-            engine.seed(str(hit['conv_id']), im.read_chat_messages(str(hit['conv_id'])))
-        emit("status", f"{name}：已监听 {len(hits)} 个会话（含 {sum(bool(h.get('is_group')) for h in hits)} 个群聊），仅回复监听就绪后的新文字消息")
+            initial_rows = im.read_chat_messages(str(hit['conv_id']), include_media=True)
+            engine.seed(str(hit['conv_id']), initial_rows)
+            forward.seed(account.unique_id, hit, initial_rows)
+        emit("status", f"{name}：已监听 {len(hits)} 个会话（含 {sum(bool(h.get('is_group')) for h in hits)} 个群聊），回复监听就绪后的新文字、emoji、表情及视频分享消息")
+        unavailable_cycles = 0
         while not stop.is_set():
+            process_browser(account.unique_id, im, engine)
+            # READY is cached by the IM client. A later page navigation or
+            # disappearing chat root must not leave the worker alive forever.
+            dom = page.evaluate(JS_LOGIN_DOM)
+            page_missing = isinstance(dom, dict) and not dom.get("hasChatRoot")
+            selected_count = 0
             for hit in hits:
                 if stop.is_set():
+                    break
+                if page_missing:
                     break
                 cid = str(hit["conv_id"])
                 if not im.ready:
                     raise ValueError(f"{name} 登录已失效，请刷新登录信息")
                 if not im.select_conversation(hit["conv_id"]):
                     continue
+                selected_count += 1
                 page.wait_for_timeout(600)
-                pending = engine.prepare(cid, im.read_chat_messages(cid), is_group=bool(hit.get("is_group")))
+                new_rows = im.read_chat_messages(cid, include_media=True)
+                try:
+                    forward.capture(account.unique_id, hit, new_rows)
+                except Exception:
+                    emit("error", f"{name}：微信转发入队失败，抖音陪聊继续运行")
+                pending = engine.prepare(cid, new_rows, is_group=bool(hit.get("is_group")))
                 if pending is None:
+                    continue
+                mode_snapshot = read_mode()
+                if mode_snapshot["mode"] != "ai":
+                    engine.consume(pending)
                     continue
                 emit("status", f"{name} → {hit['display']}：正在生成回复")
                 future = executor.submit(provider.reply, engine.messages(pending))
                 while not future.done() and not stop.is_set():
+                    process_browser(account.unique_id, im, engine)
                     page.wait_for_timeout(150)
                 if stop.is_set():
                     break
@@ -109,7 +151,10 @@ def run_account(account, config: AIConfig, browser_config, stop: threading.Event
                     emit("error", f"{name}：{message}，60 秒后再试")
                     continue
                 # API 等待期间有新消息或手动回复，丢弃过时结果，下轮重新判断。
-                fresh = engine.prepare(cid, im.read_chat_messages(cid), is_group=bool(hit.get("is_group")))
+                fresh = engine.prepare(cid, im.read_chat_messages(cid, include_media=True), is_group=bool(hit.get("is_group")))
+                if not allows_send(mode_snapshot):
+                    engine.consume(pending)
+                    continue
                 if fresh is None or fresh.ids != pending.ids or stop.is_set():
                     continue
                 # 发送前就去重；回执缺失不重发，防止同一回复发送两次。
@@ -120,11 +165,30 @@ def run_account(account, config: AIConfig, browser_config, stop: threading.Event
                     emit("sent", f"{name} → {hit['display']}：回复成功")
                 else:
                     emit("error", f"{name} → {hit['display']}：未确认发送成功，未自动重发")
+            if stop.is_set():
+                break
+            if selected_count:
+                unavailable_cycles = 0
+                if time.monotonic() - last_checkpoint >= 300:
+                    checkpoint()
+                    last_checkpoint = time.monotonic()
+            else:
+                unavailable_cycles += 1
+                if unavailable_cycles == 1:
+                    emit("status", f"{name}：会话页面暂不可用，正在检查连接")
+                if unavailable_cycles >= 3:
+                    login_visible = bool(dom.get("loginVisible")) if isinstance(dom, dict) else False
+                    raise ValueError(f"{name}：会话页面连续 3 次不可用（登录窗口={login_visible}），停止连接以便重新启动")
             remaining = config.poll_interval * 1000
             while remaining > 0 and not stop.is_set():
                 page.wait_for_timeout(min(remaining, 150))
                 remaining -= 150
     finally:
+        if context is not None and im is not None and im.ready:
+            with suppress(Exception):
+                dom = context.pages[-1].evaluate(JS_LOGIN_DOM)
+                if isinstance(dom, dict) and dom.get('hasChatRoot') and not dom.get('loginVisible'):
+                    checkpoint()
         executor.shutdown(wait=True, cancel_futures=True)
         for resource, method in ((provider, "close"), (im, "detach"),
                                  (context, "close"), (browser, "close")):
