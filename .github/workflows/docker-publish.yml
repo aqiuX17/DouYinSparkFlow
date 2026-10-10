@@ -17,6 +17,7 @@ on:
       # 构建期会 COPY 进镜像的内容 —— 镜像是 `COPY . /app` 全量打进，
       # 改了就必须重建，否则推上去的还是旧代码。此清单需与 detect-changes 的 PATTERNS 保持一致
       - main.py
+      - app/**
       - core/**
       - utils/**
       - VERSION
@@ -24,6 +25,7 @@ on:
       # 容器入口与编排
       - docker/**
       - docker-compose.yml
+      - docker-compose.chat.yml
       # 本工作流自身
       - .github/workflows/docker-publish.yml
 
@@ -42,7 +44,7 @@ jobs:
   # 需要一个 forced 兜底；把「本次要不要重建」在这里算一次，publish 只读结果。
   detect-changes:
     name: Detect changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       forced: ${{ steps.classify.outputs.forced }}
       needs_build: ${{ steps.classify.outputs.needs_build }}
@@ -79,7 +81,7 @@ jobs:
           echo "$CHANGED"
 
           # 改到这些就得重建镜像（与 on.push.paths 那份清单保持一致）
-          PATTERNS='^(Dockerfile|\.dockerignore|main\.py|VERSION|requirements\.txt|docker-compose\.yml|\.github/workflows/docker-publish\.yml)$|^(core|utils|docker)/'
+          PATTERNS='^(Dockerfile|\.dockerignore|main\.py|VERSION|requirements\.txt|docker-compose(\.chat)?\.yml|\.github/workflows/docker-publish\.yml)$|^(app|core|utils|docker)/'
 
           if printf '%s\n' "$CHANGED" | grep -Eq "$PATTERNS"; then
             echo "needs_build=true" >> "$GITHUB_OUTPUT"
@@ -97,7 +99,7 @@ jobs:
     name: Build → GHCR
     needs: detect-changes
     if: ${{ needs.detect-changes.outputs.forced == 'true' || needs.detect-changes.outputs.needs_build == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout repository
@@ -159,6 +161,7 @@ jobs:
           docker buildx build --provenance=false --sbom=false \
             -f Dockerfile \
             --build-arg IMAGE_VERSION="$IMAGE_VERSION" \
+            --build-arg ENABLE_WINDOWS_FONTS=false \
             --cache-from type=gha \
             --cache-to type=gha,mode=min \
             --metadata-file /tmp/build-meta.json \
