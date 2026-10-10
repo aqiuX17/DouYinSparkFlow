@@ -1,15 +1,16 @@
 """Bound-owner commands, direct text sends and 60-second latest-notification routing."""
 import json,os,sqlite3,time,secrets
 from pathlib import Path
+from core.ai.weixin_forward import ClosingConnection
 try:
- from .reply_mode import read_mode
+ from .reply_mode import read_mode, set_mode, mode_command, describe_mode
 except ImportError:
- from reply_mode import read_mode
+ from reply_mode import read_mode, set_mode, mode_command, describe_mode
 DB=Path(os.getenv('DOUYIN_WEIXIN_DB','/home/ubuntu/douyin-weixin-validation/forward.sqlite3'))
 RESERVED={'切换人工','人工模式','切换AI','切换ai','AI模式','查看模式'}
 def connect():
  DB.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
- c=sqlite3.connect(str(DB),timeout=5);c.execute('PRAGMA busy_timeout=5000')
+ c=sqlite3.connect(str(DB),timeout=5,factory=ClosingConnection);c.execute('PRAGMA busy_timeout=5000')
  c.executescript('''CREATE TABLE IF NOT EXISTS catalog(n INTEGER PRIMARY KEY AUTOINCREMENT,account TEXT,conv TEXT,hit TEXT,active INTEGER,updated REAL,UNIQUE(account,conv));
  CREATE TABLE IF NOT EXISTS inbound_commands(id TEXT PRIMARY KEY);
  CREATE TABLE IF NOT EXISTS send_commands(code TEXT PRIMARY KEY,account TEXT,conv TEXT,text TEXT,state TEXT,expires REAL,revision TEXT,updated REAL);
@@ -48,7 +49,14 @@ def owner_command(text,message_key,now=None):
   c.execute('BEGIN IMMEDIATE')
   if c.execute('SELECT 1 FROM inbound_commands WHERE id=?',(message_key,)).fetchone():return
   c.execute('INSERT INTO inbound_commands VALUES(?)',(message_key,));response=None
-  if text in RESERVED:return
+  command=mode_command(text)
+  if command=='invalid':
+   notify(c,message_key+':mode','未识别的模式指令，未作为聊天消息发送。请发送：切换AI / 切换人工 / 查看模式。若要发送这段原文，请使用“发送 编号 内容”。');return
+  if command is not None:
+   before=read_mode()
+   current=before if command=='status' else set_mode(command)
+   prefix='模式未改变。' if command!='status' and current==before else '模式已更新。' if command!='status' else ''
+   notify(c,message_key+':mode',prefix+describe_mode(current));return
   if text in ('获取聊天列表','聊天列表','获取好友列表'):
    rows=c.execute('SELECT n,hit FROM catalog WHERE active=1 ORDER BY n').fetchall();lines=['聊天列表（编号固定；启动扫描时更新；好友和群聊均可发送）']
    for n,h in rows:

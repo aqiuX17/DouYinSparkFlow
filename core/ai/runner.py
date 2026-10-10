@@ -102,6 +102,11 @@ def run_account(account, config: AIConfig, browser_config, stop: threading.Event
             engine.seed(str(hit['conv_id']), initial_rows)
             forward.seed(account.unique_id, hit, initial_rows)
         emit("status", f"{name}：已监听 {len(hits)} 个会话（含 {sum(bool(h.get('is_group')) for h in hits)} 个群聊），回复监听就绪后的新文字、emoji、表情及视频分享消息")
+        def notify_reply(hit, pending, snapshot, reply, state):
+            try:
+                forward.ai_reply(account.unique_id, hit, pending.ids, snapshot['revision'], reply, state)
+            except Exception:
+                emit("error", f"{name}：AI回复通知入队失败，请检查桥接状态")
         unavailable_cycles = 0
         while not stop.is_set():
             process_browser(account.unique_id, im, engine)
@@ -150,16 +155,24 @@ def run_account(account, config: AIConfig, browser_config, stop: threading.Event
                     message = str(exc) if isinstance(exc, ProviderError) else "AI 生成失败"
                     emit("error", f"{name}：{message}，60 秒后再试")
                     continue
+                notify_reply(hit, pending, mode_snapshot, reply, 'generated')
                 # API 等待期间有新消息或手动回复，丢弃过时结果，下轮重新判断。
                 fresh = engine.prepare(cid, im.read_chat_messages(cid, include_media=True), is_group=bool(hit.get("is_group")))
                 if not allows_send(mode_snapshot):
+                    notify_reply(hit, pending, mode_snapshot, reply, 'cancelled')
                     engine.consume(pending)
                     continue
                 if fresh is None or fresh.ids != pending.ids or stop.is_set():
+                    notify_reply(hit, pending, mode_snapshot, reply, 'cancelled')
                     continue
                 # 发送前就去重；回执缺失不重发，防止同一回复发送两次。
                 engine.consume(pending)
-                result = im.type_and_send(hit, reply, log_content=False)
+                try:
+                    result = im.type_and_send(hit, reply, log_content=False)
+                except Exception:
+                    notify_reply(hit, pending, mode_snapshot, reply, 'uncertain')
+                    raise
+                notify_reply(hit, pending, mode_snapshot, reply, 'sent' if result.get('ok') else 'uncertain')
                 if result.get("ok"):
                     engine.commit(pending, reply)
                     emit("sent", f"{name} → {hit['display']}：回复成功")

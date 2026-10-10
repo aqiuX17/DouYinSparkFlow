@@ -1,6 +1,6 @@
 """Outbound-only iLink worker; accepts only the QR-bound user's context."""
 from core.ai.bridge_commands import owner_command, mark_forwarded
-from core.ai.reply_mode import read_mode, set_mode
+from core.ai.weixin_forward import ClosingConnection
 import hashlib
 import json,os,time,secrets,base64,threading,urllib.request,urllib.parse,sqlite3
 from pathlib import Path
@@ -33,23 +33,13 @@ def monitor():
                     text=''.join(i.get('text_item',{}).get('text','') for i in m.get('item_list',[]) if i.get('type')==1).strip()
                     message_key='weixin:'+str(m.get('message_id') or hashlib.sha256(json.dumps(m,sort_keys=True).encode()).hexdigest())
                     owner_command(text,message_key)
-                    commands={'切换人工':'manual','人工模式':'manual','切换AI':'ai','切换ai':'ai','AI模式':'ai','查看模式':'status'}
-                    if text in commands:
-                        command=commands[text]
-                        if command!='status':set_mode(command)
-                        current=read_mode()['mode'];label='AI自动回复' if current=='ai' else '人工模式（不自动回复）'
-                        response='当前模式：'+label+'。作用于全部已监听会话；抖音新消息仍转发到微信。可用“发送 编号 内容”直接发给好友或群聊；新消息通知后的60秒内可直接回复最近会话。'
-                        try:
-                            result=api('ilink/bot/sendmessage',{'msg':{'from_user_id':'','to_user_id':OWNER,'client_id':'mode-'+secrets.token_hex(12),'message_type':2,'message_state':2,'context_token':m['context_token'],'item_list':[{'type':1,'text_item':{'text':response}}]}})
-                            record('mode_command',mode=current,response_id_present=bool(result.get('message_id')))
-                        except Exception as e:record('mode_confirmation_failed',error_type=type(e).__name__)
 
             if x.get('get_updates_buf'):
                 cursor=x['get_updates_buf'];cursorfile.write_text(json.dumps({'cursor':cursor}))
         except Exception as e:
             record('poll_failed',error_type=type(e).__name__);time.sleep(20)
 def connection():
-    db=sqlite3.connect(str(DB),timeout=5);db.execute('PRAGMA busy_timeout=5000');return db
+    db=sqlite3.connect(str(DB),timeout=5,factory=ClosingConnection);db.execute('PRAGMA busy_timeout=5000');return db
 
 def work_once():
     if not DB.exists():return

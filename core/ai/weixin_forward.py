@@ -2,6 +2,13 @@
 import json,os,sqlite3,time
 from pathlib import Path
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
 class ForwardOutbox:
     def __init__(self, path=None):
         self.path=Path(path or os.getenv('DOUYIN_WEIXIN_DB','/home/ubuntu/douyin-weixin-validation/forward.sqlite3'))
@@ -11,7 +18,7 @@ class ForwardOutbox:
 CREATE TABLE IF NOT EXISTS messages(account TEXT,conv TEXT,mid TEXT,payload TEXT,state TEXT,attempts INTEGER DEFAULT 0,created REAL,updated REAL,error TEXT,PRIMARY KEY(account,conv,mid));''')
         os.chmod(self.path,0o600)
     def connect(self):
-        db=sqlite3.connect(str(self.path),timeout=5);db.execute('PRAGMA busy_timeout=5000');return db
+        db=sqlite3.connect(str(self.path),timeout=5,factory=ClosingConnection);db.execute('PRAGMA busy_timeout=5000');return db
     @staticmethod
     def order(row):
         x=str(row.get('order',''));return int(x) if x.isdigit() else None
@@ -43,3 +50,21 @@ CREATE TABLE IF NOT EXISTS messages(account TEXT,conv TEXT,mid TEXT,payload TEXT
                 payload=json.dumps({'text':text[:1800],'is_group':bool(hit.get('is_group'))},ensure_ascii=False)
                 cur=db.execute('INSERT OR IGNORE INTO messages(account,conv,mid,payload,state,created,updated) VALUES(?,?,?,?,?,?,?)',(account,cid,str(row['id']),payload,'pending',time.time(),time.time()));added+=cur.rowcount
         return added
+
+    def ai_reply(self, account, hit, ids, revision, reply, state):
+        """Control notifications never change the manual quick-reply destination."""
+        import hashlib
+        labels = {'generated':'已生成（尚未发送）', 'sent':'抖音发送回执已确认（不代表已读）',
+                  'cancelled':'未发送：模式改变或消息已过时',
+                  'uncertain':'发送未确认，请核对抖音；不会自动重发'}
+        if state not in labels: raise ValueError('Unsupported AI reply state')
+        key = hashlib.sha256(json.dumps([str(account), str(hit['conv_id']), list(ids), revision, state]).encode()).hexdigest()
+        header = ('AI回复 · ' + labels[state] + '\n账号：' + str(account)
+                  + '\n会话：' + str(hit.get('display') or hit.get('title') or hit['conv_id']) + '\n内容：')
+        # Split rather than silently truncating generated content.
+        chunks = [reply[i:i+1200] for i in range(0, len(reply), 1200)] or ['']
+        with self.connect() as db:
+            for i, chunk in enumerate(chunks):
+                text = header + chunk + (f'\n第{i+1}/{len(chunks)}段' if len(chunks)>1 else '')
+                db.execute('INSERT OR IGNORE INTO messages(account,conv,mid,payload,state,created,updated) VALUES(?,?,?,?,?,?,?)',
+                           ('__control__', 'ai-reply', key+':'+str(i), json.dumps({'text':text},ensure_ascii=False), 'pending', time.time(),time.time()))
