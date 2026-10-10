@@ -1,6 +1,31 @@
-# DouYinSparkFlow · 微信桥接与 AI 陪聊
+# DouYinSparkFlow · 服务器 AI 陪聊与微信 ClawBot 双向桥接
 
 本仓库是 [2061360308/DouYinSparkFlow](https://github.com/2061360308/DouYinSparkFlow) 的个人 fork，保留原项目的可视化管理、自动续火花、多账户和 Docker 功能，并增加 AI 陪聊、会话状态保存及微信 ClawBot 双向消息桥接。修改维护在本仓库；不是上游官方功能。
+
+## 核心：在服务器运行，通过微信管理抖音聊天
+
+**支持 Linux 服务器长期部署、AI 陪聊，以及微信 ClawBot 与抖音的双向消息桥接。** 无需在服务器运行微信桌面客户端；抖音侧使用已登录的无头浏览器，微信侧使用 iLink 出站接口。可以源码 + systemd 常驻运行，也可用同一 Docker 镜像启动独立的 chat 和 weixin 两个容器。
+
+## 微信 ClawBot ↔ 抖音：原理与方法
+
+```text
+抖音好友／群聊新消息
+  → 已登录浏览器读取（只扫描配置的监听目标）
+  → SQLite 持久化出站队列与去重
+  → iLink sendmessage（绑定用户 + context_token）
+  → 手机微信 ClawBot
+
+手机微信 ClawBot 指令／回复
+  → iLink getupdates 长轮询（校验绑定的 from_user_id）
+  → 解析模式、编号或 60 秒最近会话路由
+  → SQLite 发送队列（冻结目标 conv_id）
+  → 原浏览器线程选择会话并发送
+  → 发送状态通过微信返回
+```
+
+微信侧通过 `ilinkai.weixin.qq.com` 的 `getupdates` 收消息、`sendmessage` 发消息；抖音侧不是官方私信开放 API，而是 `DouyinIM` 操作已登录聊天网页。两个进程共享私有数据库和模式文件，浏览器操作仅在其拥有者线程执行；没有公网 Webhook、没有入站端口，也不依赖 Grok。手机扫码绑定后必须先向 ClawBot 发一句话，获得回复必需的 `context_token`。
+
+**接入顺序：** 配置抖音账号、AI 服务和监听目标 → 建立私有状态目录 → 手机启用 ClawBot 并扫码 → 启动 chat 和 weixin → 在 ClawBot 发一句话 → 获取聊天列表／切换模式／发送测试。完整命令见 [微信桥接部署指南](docs/guide/微信桥接.md)。
 
 ## 功能
 
@@ -27,6 +52,24 @@ python main.py app
 先在应用中配置抖音登录、AI 服务和监听目标，再运行 `python main.py chat`。微信桥接部署与扫码绑定见 [微信桥接指南](docs/guide/微信桥接.md)；AI 参数见 [AI 陪聊](docs/guide/AI陪聊.md)。原功能、界面及上游教程见 [原项目说明](docs/guide/原项目说明.md)。
 
 > 此版本默认人工模式：模式文件不存在或损坏时不自动回复。启用 AI 需要发送“切换AI”或显式调用模式配置。人工模式仍需要现有 chat 配置和浏览器监听进程。
+
+## 服务器部署与 AI 陪聊
+
+- **源码 + systemd：** `.venv/bin/python main.py chat` 持续监听；`.venv/bin/python -m core.ai.weixin_worker` 接入微信。适合现有 Linux 服务器，不必迁移正在运行的服务到 Docker。
+- **Docker 常驻：** 使用新增 `docker-compose.chat.yml`；`LAUNCH_MODE=chat` 运行 AI／人工监听，`LAUNCH_MODE=weixin` 运行微信桥接。原 `docker-compose.yml` 仍是 cron 续火花，不是持续陪聊。
+- **AI 服务：** 支持 DeepSeek、OpenAI 兼容接口、多轮上下文、角色提示词与群聊成员区分；在应用中配置 `AI_CHAT` 和账号的 `ai_targets`。密钥仅保存在私有 `.env`。
+- **人工／AI 切换：** 默认人工。微信“切换AI”启用已配置目标的自动回复，“切换人工”停用自动回复但保留新消息转发与手动发送。模型缺失或配置未启用，不会因为发一条切换指令就自动完成配置。
+
+```sh
+# 先按部署指南准备 config/.env、私有目录和扫码绑定
+# 使用本机 Docker 构建，不依赖 GitHub Actions
+# 默认关闭专有 Windows 字体；只支持当前预置的 linux/amd64 浏览器
+docker compose -f docker-compose.chat.yml build chat
+docker compose -f docker-compose.chat.yml up -d chat weixin
+docker compose -f docker-compose.chat.yml logs --tail=100 -f
+```
+
+镜像发布至本仓库对应的 `ghcr.io/aqiux17/douyinsparkflow`；以 Actions 成功状态及实际镜像摘要为准，不表示最新提交已经发布。[服务器部署、扫码和运行检查](docs/guide/微信桥接.md#docker-服务器常驻部署)。
 
 ## 微信指令
 

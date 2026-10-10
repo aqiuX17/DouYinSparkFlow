@@ -1,0 +1,33 @@
+# Server-only AI chat + Weixin bridge; no public ports, no gost required.
+x-bridge-environment: &bridge-environment
+  DOUYIN_WEIXIN_STATE_DIR: /state
+  DOUYIN_WEIXIN_DB: /state/forward.sqlite3
+  DOUYIN_REPLY_MODE_FILE: /state/reply-mode.json
+  PYTHONUNBUFFERED: "1"
+services:
+  chat:
+    image: ${DOUYIN_IMAGE:-douyinsparkflow:local}
+    build:
+      context: .
+      args:
+        # Public build: do not redistribute proprietary Windows fonts.
+        ENABLE_WINDOWS_FONTS: "false"
+    restart: unless-stopped
+    init: true
+    shm_size: 1gb
+    environment:
+      <<: *bridge-environment
+      LAUNCH_MODE: chat
+    volumes:
+      - ${CONFIG_ENV_FILE:-./config/.env}:/app/.env:ro
+      - ${WEIXIN_STATE_DIR:-./.weixin-bridge}:/state
+      - ${SESSION_STATE_DIR:-./config/sessions}:/app/app/sessions
+  weixin:
+    image: ${DOUYIN_IMAGE:-douyinsparkflow:local}
+    restart: unless-stopped
+    init: true
+    environment:
+      <<: *bridge-environment
+      LAUNCH_MODE: weixin
+    volumes:
+      - ${WEIXIN_STATE_DIR:-./.weixin-bridge}:/state

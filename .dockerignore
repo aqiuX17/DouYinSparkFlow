@@ -40,3 +40,16 @@ app/logo.ico
 tools/
 tests/
 docs/
+
+# Never bake authentication, bridge queues or backups into image layers
+app/sessions/
+.weixin-bridge/
+.deployment-backups/
+**/binding.json
+**/context.json
+**/qr.json
+**/forward-cursor.json
+**/receive-state.json
+**/reply-mode.json
+**/*.sqlite3
+**/*.sqlite3-*

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# 一个镜像两种部署形态，按启动模式分派：
+# 按启动模式分派：chat / weixin 为服务器常驻服务，cron / fc 保留原功能。
 #   cron（默认）→ 服务器 Docker：容器内 cron 到点跑 runTasks
 #   fc          → 阿里云函数计算：起 HTTP Server，等定时触发器事件打进来再跑
 #
@@ -12,6 +12,12 @@ LAUNCH_MODE="${LAUNCH_MODE:-cron}"
 LAUNCH_MODE="${LAUNCH_MODE,,}"  # 控制台里手打容易填成 FC / Cron，统一转小写
 
 case "${LAUNCH_MODE}" in
+  chat|ai)
+    exec python /app/main.py chat "$@"
+    ;;
+  weixin|clawbot)
+    exec python -m core.ai.weixin_worker "$@"
+    ;;
   fc|fc_server|serve)
     exec /app/docker/entrypoint-fc.sh "$@"
     ;;
