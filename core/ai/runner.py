@@ -120,6 +120,12 @@ def run_account(account, config: AIConfig, browser_config, stop: threading.Event
                     break
                 if page_missing:
                     break
+                # Manual sends must not wait behind a complete target scan.
+                # Pump before selecting this hit so a send to another chat cannot
+                # leave the scanner reading or replying in the wrong conversation.
+                process_browser(account.unique_id, im, engine)
+                if stop.is_set():
+                    break
                 cid = str(hit["conv_id"])
                 if not im.ready:
                     raise ValueError(f"{name} 登录已失效，请刷新登录信息")
@@ -196,6 +202,9 @@ def run_account(account, config: AIConfig, browser_config, stop: threading.Event
             while remaining > 0 and not stop.is_set():
                 page.wait_for_timeout(min(remaining, 150))
                 remaining -= 150
+                # Still run browser work in its owner thread during idle polling.
+                if not stop.is_set():
+                    process_browser(account.unique_id, im, engine)
     finally:
         if context is not None and im is not None and im.ready:
             with suppress(Exception):

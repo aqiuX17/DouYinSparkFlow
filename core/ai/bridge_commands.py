@@ -102,9 +102,9 @@ def owner_command(text,message_key,now=None):
 def process_browser(account,im,engine):
  with connect() as c:
   c.execute('BEGIN IMMEDIATE')
-  row=c.execute("SELECT code,conv,text,expires,revision FROM send_commands WHERE account=? AND state='queued' ORDER BY updated LIMIT 1",(str(account),)).fetchone()
+  row=c.execute("SELECT code,conv,text,expires,revision,updated FROM send_commands WHERE account=? AND state='queued' ORDER BY updated LIMIT 1",(str(account),)).fetchone()
   if not row:return False
-  code,cid,text,expires,revision=row;mode=read_mode()
+  code,cid,text,expires,revision,queued_at=row;mode=read_mode()
   if expires<time.time() or mode['mode']!='manual' or mode['revision']!=revision:
    c.execute("UPDATE send_commands SET state='cancelled',updated=? WHERE code=?",(time.time(),code));notify(c,code+':result','未发送：排队已过期或模式改变。');return True
   hitrow=c.execute('SELECT hit FROM catalog WHERE account=? AND conv=? AND active=1',(str(account),cid)).fetchone()
@@ -112,15 +112,22 @@ def process_browser(account,im,engine):
    c.execute("UPDATE send_commands SET state='cancelled',updated=? WHERE code=?",(time.time(),code));notify(c,code+':result','未发送：会话不可用。');return True
   hit=json.loads(hitrow[0]);c.execute("UPDATE send_commands SET state='sending',updated=? WHERE code=?",(time.time(),code))
  state='uncertain';response='未确认发送成功，请先在抖音核对；不会自动重发。'
+ queue_ms=max(0,round((time.time()-queued_at)*1000));select_ms=send_ms=None
  try:
-  if not im.select_conversation(cid):state='failed';response='未发送：无法选择对应会话。'
+  started=time.perf_counter();selected=im.select_conversation(cid);select_ms=round((time.perf_counter()-started)*1000)
+  if not selected:state='failed';response='未发送：无法选择对应会话。'
   elif read_mode()!=mode:state='cancelled';response='未发送：模式已改变。'
   else:
-   result=im.type_and_send(hit,text,log_content=False)
+   started=time.perf_counter()
+   try:result=im.type_and_send(hit,text,log_content=False)
+   finally:send_ms=round((time.perf_counter()-started)*1000)
    if result.get('ok'):state='sent';response='抖音发送回执已确认。'+('群聊：' if hit.get('is_group') else '好友：')+str(hit.get('display') or hit.get('title'))+'\n内容：'+text+'\n这不等于对方已读。'
  except Exception:pass
  with connect() as c:
   c.execute('UPDATE send_commands SET state=?,updated=? WHERE code=?',(state,time.time(),code));notify(c,code+':result',response)
+ # No message, account, conversation or credentials in timing diagnostics.
+ import logging
+ logging.getLogger('app').info('manual_send_timing queue_ms=%s select_ms=%s send_ms=%s state=%s',queue_ms,select_ms,send_ms,state)
  return True
 
 def recover(account):
